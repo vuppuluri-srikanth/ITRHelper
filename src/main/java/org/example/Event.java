@@ -41,5 +41,5 @@ public class Event {
 }
 
 enum EventType {
-    BUY, SELL, DIVIDEND, DEPOSIT, TAX, REINVEST, UNKNOWN
+    BUY, SELL, DIVIDEND, DEPOSIT, TAX, REINVEST, UNKNOWN, ESPP
 }

@@ -4,7 +4,7 @@ import java.time.LocalDate;
 
 //All amounts in this are in INR
 public class Lot {
-    private final LocalDate dateOfAcquiring;
+    private LocalDate dateOfAcquiring;
     private final double numSharesAtAcquisition;
     private final double acquisitionPricePerShare;
     private double numSharesInAccountingYear;
@@ -15,8 +15,9 @@ public class Lot {
     private double saleAmount;
 
     private double sharesSold;
+    private final double acquisitionCostIn$;
 
-    public Lot(LocalDate dateOfAcquiring, double numSharesAtAcquisition, double acquisitionPrice){
+    public Lot(LocalDate dateOfAcquiring, double numSharesAtAcquisition, double acquisitionPrice, double acquisitionCostIn$){
         this.dateOfAcquiring = dateOfAcquiring;
         this.numSharesAtAcquisition = numSharesAtAcquisition;
         this.acquisitionPricePerShare = acquisitionPrice;
@@ -25,6 +26,7 @@ public class Lot {
         this.dividends = 0;
         this.saleAmount = 0;
         this.sharesSold = 0;
+        this.acquisitionCostIn$ = acquisitionCostIn$;
     }
 
     //to string
@@ -103,5 +105,13 @@ public class Lot {
 
     public double getSharesSold() {
         return sharesSold;
+    }
+
+    public double getAcquisitionCostIn$() {
+        return acquisitionCostIn$;
+    }
+
+    public void setDateOfAcquiring(LocalDate date) {
+        this.dateOfAcquiring = date;
     }
 }

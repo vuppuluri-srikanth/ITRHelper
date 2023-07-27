@@ -1,5 +1,6 @@
 package org.example;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.tuple.Pair;
 
@@ -12,6 +13,7 @@ import java.nio.file.Paths;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -45,6 +47,7 @@ public class FidelityParser {
         stockPriceMap = GetMsftPriceMap(folderPath);
         costInflationIndexMap = GetCostInflationIndexMap();
         List<Lot> lots = new ArrayList<>();
+        Lot unmetESPPLot = null;
         for (Event event : events) {
             if (event.getDate().isAfter(ayEndDate))
                 break;
@@ -52,8 +55,13 @@ public class FidelityParser {
             boolean beforeAY = event.getDate().isBefore(startDate);
             double conversionFactor = getConversionFactor(usdToInrMap, event.getDate());
             if (event.getType().equals(EventType.BUY) || event.getType().equals(EventType.DEPOSIT)) {
-                Lot lot = new Lot(event.getDate(), event.getShares(), getInitialValuePerShareIn$(event, stockPriceMap, event.getDate()) * conversionFactor);
+                Lot lot = new Lot(event.getDate(), event.getShares(),
+                        getInitialValuePerShareIn$(event, stockPriceMap, event.getDate()) * conversionFactor,
+                        event.getAmount());
                 lots.add(lot);
+                if (event.getType().equals(EventType.BUY)) {
+                    unmetESPPLot = lot;
+                }
             } else if (event.getType().equals(EventType.SELL)) {
                 double numShares = -1 * event.getShares();
                 double saleAmount = event.getAmount();
@@ -87,7 +95,20 @@ public class FidelityParser {
                         lot.incrementDividends(lot.getNumShares() * dividendPerShare * getConversionFactor(usdToInrMap, event.getDate()));
                     }
                 }
+            } else if (event.getType().equals(EventType.ESPP)) {
+                if (unmetESPPLot == null)
+                    throw new RuntimeException("No unmet ESPP lot found");
+                if (unmetESPPLot.getAcquisitionCostIn$() == event.getAmount()) {
+                    unmetESPPLot.setDateOfAcquiring(event.getDate());
+                    unmetESPPLot = null;
+                } else {
+                    throw new RuntimeException("ESPP lot amount mismatch");
+                }
             }
+        }
+        if (unmetESPPLot != null) {
+            System.out.println("Unmet ESPP lot found : " + unmetESPPLot);
+            lots.remove(unmetESPPLot);
         }
 
         printLongTermCapitalGains(lots);
@@ -96,11 +117,11 @@ public class FidelityParser {
 
         PrintForeignAssets(lots);
 
-        //TODO: ESPP should be considered from bought date or journalled date?
         //print lots
 //        System.out.println("Date, NumSharesAtAcquisition, AcquisitionPricePerShare, NumSharesInAccountingYear, Dividends, SaleAmount");
 //        lots.stream().filter(Lot::isActiveForAccountingYear).forEach(System.out::println);
     }
+
 
     private static void printIncomeFromDividends(LocalDate fyEndDate, LocalDate fyStartDate, List<Event> events) {
         double dividendForFY = 0; //India FY
@@ -114,7 +135,7 @@ public class FidelityParser {
             if (event.getType().equals(EventType.DIVIDEND)) {
                 dividendForFY += event.getAmount() * getConversionFactor(usdToInrMap, event.getDate());
             } else if (event.getType().equals(EventType.TAX)) {
-                taxCollectedOutside += -1 * event.getAmount() * getConversionFactor(usdToInrMap, event.getDate());
+                taxCollectedOutside += event.getAmount() * getConversionFactor(usdToInrMap, event.getDate());
             }
         }
         System.out.println("------------------------------- Dividend Income ---------------------------------------");
@@ -122,10 +143,12 @@ public class FidelityParser {
         System.out.println((int) dividendForFY + ", " + (int) taxCollectedOutside);
     }
 
-    private static void PrintForeignAssets(List<Lot> lots) {
+    private static void PrintForeignAssets(List<Lot> lots) throws JsonProcessingException {
         System.out.println("------------------------------- Foreign Assets ---------------------------------------");
         System.out.println("Date, Initial Value, Peak Value, Closing value, Dividends, SaleAmount");
-        lots.stream().filter(Lot::isActiveForAccountingYear).map(FidelityParser::prepareTaxEntry).forEach(System.out::println);
+        List<TaxEntry> taxEntries = lots.stream().filter(Lot::isActiveForAccountingYear).map(FidelityParser::prepareTaxEntry).collect(Collectors.toList());
+        Map<LocalDate, Optional<TaxEntry>> map = taxEntries.stream().collect(Collectors.groupingBy(TaxEntry::getDateOfAcquiring, Collectors.reducing(TaxEntry::sum)));
+        map.entrySet().stream().sorted(Comparator.comparing(Map.Entry::getKey)).map(Map.Entry::getValue).map(Optional::get).forEach(System.out::println);
     }
 
     private static void printLongTermCapitalGains(List<Lot> lots) {
@@ -236,7 +259,7 @@ public class FidelityParser {
 
     private static double getInitialValuePerShareIn$(Event event, Map<LocalDate, Double> stockPriceMap, LocalDate dateOfAcquiring) {
         if (event.getType().equals(EventType.BUY)) {
-            return -1 * event.getAmount() / event.getShares();
+            return event.getAmount() / event.getShares();
         } else if (event.getType().equals(EventType.DEPOSIT)) {
             return getStockPrice(stockPriceMap, dateOfAcquiring);
         } else {
@@ -267,14 +290,19 @@ public class FidelityParser {
                 if (!path.toString().contains("Transaction history"))
                     return;
                 try (Stream<String> lines = Files.lines(path)) {
+                    AtomicReference<Event> unmetESPP = new AtomicReference<>();
                     CustomForEach.forEach(lines, (elem, breaker) -> {
                         elem = elem.replaceAll("\\uFEFF", "");
                         if (StringUtils.isBlank(elem)) {
                             breaker.stop();
                         } else {
-                            Event event = FidelityParser.parseLine(elem);
-                            if (event != null)
+                            Event event = FidelityParser.parseLine(elem, unmetESPP.get());
+                            if (event != null) {
                                 events.add(event);
+                                if (event.getType().equals(EventType.BUY)) {
+                                    unmetESPP.set(event);
+                                }
+                            }
                         }
                     });
                 } catch (IOException e) {
@@ -308,7 +336,7 @@ public class FidelityParser {
         return usdToInrMap;
     }
 
-    private static Event parseLine(String line) {
+    private static Event parseLine(String line, Event unmetESPPEvent) {
         if (line.startsWith("Transaction date")) {
             return null;
         }
@@ -316,22 +344,27 @@ public class FidelityParser {
         String[] tokens = line.split(",");
 
         String dateStr = tokens[0].trim();
+        LocalDate date = LocalDate.parse(dateStr, formatter);
         String typeStr = tokens[1].trim();
+        EventType type = getEventType(typeStr);
         String investmentName = tokens[2].trim();
         String numShares = tokens[3].trim();
         numShares = numShares.equals("-") ? "0" : numShares;
-        String amountStr = tokens[4].trim().replaceAll("\\$", "");
 
-        if (typeStr.startsWith("JOURNALED") || !investmentName.equals("MICROSOFT CORP")) {
+        String amountStr = tokens[4].trim().replaceAll("\\$", "");
+        double amount = Double.parseDouble(amountStr);
+        if (amount < 0) {
+            amount = -1 * amount;
+        }
+
+        if (type.equals(EventType.REINVEST) || investmentName.equals("FIDELITY GOVERNMENT CASH RESERVES") ||
+                typeStr.equals("JOURNALED WIRE/CHECK FEE") || typeStr.equals("JOURNALED CASH WITHDRAWAL")) {
             return null;
         }
 
-        LocalDate date = LocalDate.parse(dateStr, formatter);
-        EventType type = getEventType(typeStr);
         if (EventType.UNKNOWN.equals(type)) {
             throw new RuntimeException("Unknown event type: " + typeStr);
         }
-        double amount = Double.parseDouble(amountStr);
         double shares = Double.parseDouble(numShares);
         return new Event(date, type, amount, shares);
     }
@@ -345,10 +378,12 @@ public class FidelityParser {
             return EventType.DEPOSIT;
         if (typeStr.startsWith("YOU BOUGHT ESPP"))
             return EventType.BUY;
-        if (typeStr.startsWith("REINVESTMENT REINVEST"))
-            return EventType.REINVEST;
         if (typeStr.startsWith("YOU SOLD"))
             return EventType.SELL;
+        if (typeStr.startsWith("REINVESTMENT REINVEST"))
+            return EventType.REINVEST;
+        if (typeStr.startsWith("JOURNALED SPP PURCHASE CREDIT"))
+            return EventType.ESPP;
         return EventType.UNKNOWN;
     }
 }

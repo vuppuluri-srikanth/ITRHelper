@@ -54,4 +54,13 @@ public class TaxEntry {
     public int getSaleAmount() {
         return saleAmount;
     }
+
+    public static TaxEntry sum(TaxEntry taxEntry1, TaxEntry taxEntry2) {
+        return new TaxEntry(taxEntry1.getDateOfAcquiring(),
+                taxEntry1.getInitialValue() + taxEntry2.getInitialValue(),
+                taxEntry1.getPeakValue() + taxEntry2.getPeakValue(),
+                taxEntry1.getClosingValue() + taxEntry2.getClosingValue(),
+                taxEntry1.getAmountCredited() + taxEntry2.getAmountCredited(),
+                taxEntry1.getSaleAmount() + taxEntry2.getSaleAmount());
+    }
 }
