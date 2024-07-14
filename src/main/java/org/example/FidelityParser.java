@@ -1,12 +1,15 @@
 package org.example;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.tuple.Pair;
+import org.example.dtos.Event;
+import org.example.dtos.EventType;
+import org.example.dtos.Lot;
+import org.example.dtos.TaxEntry;
+import org.example.repositories.CurrencyConverterFactory;
+import org.example.repositories.CurrencyConverterFactory.CurrencyConverter;
 
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -17,20 +20,24 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import static org.example.dtos.Currency.INR;
+import static org.example.dtos.Currency.USD;
+import static org.example.repositories.CostInflationRepository.getCostInflation;
+import static org.example.repositories.StockPriceRepository.getPeakStockPrice;
+import static org.example.repositories.StockPriceRepository.getStockPrice;
+
 public class FidelityParser {
     static DateTimeFormatter formatter = DateTimeFormatter.ofPattern("MMM-dd-yyyy");
-    static Map<LocalDate, Double> usdToInrMap;
 
-    static Map<LocalDate, Double> stockPriceMap;
-    static Map<Integer, Integer> costInflationIndexMap;
-
+    public static final String MSFT = "MSFT";
     static int accountingYear;
     static LocalDate startDate;
     static LocalDate ayEndDate;
+    static CurrencyConverter currencyConverter;
 
     public static void main(String[] args) throws IOException {
         if (args.length < 2) {
-            System.out.println("Usage: FidelityParser <Folder-Containing-Fidelity-Transaction-History> <Accounting-Year>");
+            System.out.println("Usage: FidelityParser <Folder-Containing-Fidelity-Transaction-History> <Financial-Year-Start>");//For FY 2023-24 provide 2023
             return;
         }
         Path folderPath = Paths.get(args[0]);//folder containing fidelity transaction history
@@ -42,10 +49,7 @@ public class FidelityParser {
         LocalDate fyStartDate = LocalDate.of(accountingYear, 4, 1);//Indian FY ends on 31st March. This will be used only for Dividend Tax calculation
 
         List<Event> events = ReadAllEvents(folderPath);
-
-        usdToInrMap = GetCurrencyConversionMap(folderPath);
-        stockPriceMap = GetMsftPriceMap(folderPath);
-        costInflationIndexMap = GetCostInflationIndexMap();
+        currencyConverter = CurrencyConverterFactory.build(USD, INR);
         List<Lot> lots = new ArrayList<>();
         Lot unmetESPPLot = null;
         for (Event event : events) {
@@ -53,11 +57,10 @@ public class FidelityParser {
                 break;
 
             boolean beforeAY = event.getDate().isBefore(startDate);
-            double conversionFactor = getConversionFactor(usdToInrMap, event.getDate());
             if (event.getType().equals(EventType.BUY) || event.getType().equals(EventType.DEPOSIT)) {
-                Lot lot = new Lot(event.getDate(), event.getShares(),
-                        getInitialValuePerShareIn$(event, stockPriceMap, event.getDate()) * conversionFactor,
-                        event.getAmount());
+                //TODO: Get ticker from Data and remove hard coding
+                double acquisitionPrice = currencyConverter.convert(event.getDate(), getInitialValuePerShareIn$(event, event.getDate()));
+                Lot lot = new Lot(event.getDate(), event.getShares(), acquisitionPrice, event.getAmount());
                 lots.add(lot);
                 if (event.getType().equals(EventType.BUY)) {
                     unmetESPPLot = lot;
@@ -70,17 +73,14 @@ public class FidelityParser {
                 for (Lot lot : lots) {
                     if (lot.isActive()) {
                         double numSharesInLot = lot.getNumShares();
-                        if (numSharesInLot >= numShares) {
-                            lot.decrementShares(numShares, beforeAY);
-                            lot.incrementSales(saleAmount * conversionFactor);
-                            lot.incrementSharesSold(numShares);
-                            break;
-                        } else {
-                            lot.decrementShares(numSharesInLot, beforeAY);
-                            lot.incrementSales(numSharesInLot * saleAmountPerShare * conversionFactor);
-                            lot.incrementSharesSold(numSharesInLot);
-                            numShares -= numSharesInLot;
+                        double numSharedSold = Math.min(numSharesInLot, numShares);
+                        lot.decrementShares(numSharedSold, beforeAY);
+                        // Sales done before AY should make into the Sale Amount for AY
+                        if (!beforeAY) {
+                            lot.incrementSales(currencyConverter.convert(event.getDate(), numSharedSold * saleAmountPerShare));
+                            lot.incrementSharesSold(numSharedSold);
                         }
+                        numShares -= numSharedSold;
                     }
                 }
             } else if (event.getType().equals(EventType.DIVIDEND)) {
@@ -92,7 +92,7 @@ public class FidelityParser {
                 double dividendPerShare = amount / totalSharesNow;
                 for (Lot lot : lots) {
                     if (lot.isActive()) {
-                        lot.incrementDividends(lot.getNumShares() * dividendPerShare * getConversionFactor(usdToInrMap, event.getDate()));
+                        lot.incrementDividends(currencyConverter.convert(event.getDate(), lot.getNumShares() * dividendPerShare));
                     }
                 }
             } else if (event.getType().equals(EventType.ESPP)) {
@@ -111,15 +111,13 @@ public class FidelityParser {
             lots.remove(unmetESPPLot);
         }
 
-        printLongTermCapitalGains(lots);
+        int totalSale = printLongTermCapitalGains(lots);
 
         printIncomeFromDividends(fyEndDate, fyStartDate, events);
 
-        PrintForeignAssets(lots);
-
-        //print lots
-//        System.out.println("Date, NumSharesAtAcquisition, AcquisitionPricePerShare, NumSharesInAccountingYear, Dividends, SaleAmount");
-//        lots.stream().filter(Lot::isActiveForAccountingYear).forEach(System.out::println);
+        int totalSaleFA = printForeignAssets(lots);
+        if (totalSale != totalSaleFA)
+            throw new IllegalStateException(String.format("Total Sale is not matching : %d %d", totalSale, totalSaleFA));
     }
 
 
@@ -133,9 +131,10 @@ public class FidelityParser {
                 break;
 
             if (event.getType().equals(EventType.DIVIDEND)) {
-                dividendForFY += event.getAmount() * getConversionFactor(usdToInrMap, event.getDate());
+                System.out.println("########### Dividend : " + event.getAmount());
+                dividendForFY += currencyConverter.convert(event.getDate(), event.getAmount());
             } else if (event.getType().equals(EventType.TAX)) {
-                taxCollectedOutside += event.getAmount() * getConversionFactor(usdToInrMap, event.getDate());
+                taxCollectedOutside += currencyConverter.convert(event.getDate(), event.getAmount());
             }
         }
         System.out.println("------------------------------- Dividend Income ---------------------------------------");
@@ -143,43 +142,45 @@ public class FidelityParser {
         System.out.println((int) dividendForFY + ", " + (int) taxCollectedOutside);
     }
 
-    private static void PrintForeignAssets(List<Lot> lots) throws JsonProcessingException {
+    //Returns total sale value
+    private static int printForeignAssets(List<Lot> lots) {
         System.out.println("------------------------------- Foreign Assets ---------------------------------------");
         System.out.println("Date, Initial Value, Peak Value, Closing value, Dividends, SaleAmount");
         List<TaxEntry> taxEntries = lots.stream().filter(Lot::isActiveForAccountingYear).map(FidelityParser::prepareTaxEntry).collect(Collectors.toList());
         Map<LocalDate, Optional<TaxEntry>> map = taxEntries.stream().collect(Collectors.groupingBy(TaxEntry::getDateOfAcquiring, Collectors.reducing(TaxEntry::sum)));
-        map.entrySet().stream().sorted(Comparator.comparing(Map.Entry::getKey)).map(Map.Entry::getValue).map(Optional::get).forEach(System.out::println);
+        map.entrySet().stream().sorted(Map.Entry.comparingByKey()).map(Map.Entry::getValue).map(Optional::get).forEach(t -> {
+            validateTaxEntry(t);
+            System.out.println(t);
+        });
+        int totalDividends = map.values().stream().map(Optional::get).mapToInt(TaxEntry::getAmountCredited).sum();
+        System.out.println("totalDividends = " + totalDividends);
+        return (int) map.values().stream().map(Optional::get).mapToDouble(TaxEntry::getSaleAmount).sum();
     }
 
-    private static void printLongTermCapitalGains(List<Lot> lots) {
+    private static void validateTaxEntry(TaxEntry taxEntry) {
+        if (taxEntry.getSaleAmount() > taxEntry.getPeakValue())
+            throw new IllegalStateException("Sale amount is greater than peak value: " + taxEntry);
+    }
+
+    // Return total sale
+    private static int printLongTermCapitalGains(List<Lot> lots) {
         double costOfAcquisition = 0;
         double saleValue = 0;
         for (Lot lot : lots) {
             if (lot.isActiveForAccountingYear() && lot.getSaleAmount() > 0) {
                 costOfAcquisition += calculateValueWithIndexation(lot.getSharesSold() * lot.getAcquisitionPricePerShare(),
-                        costInflationIndexMap.get(lot.getDateOfAcquiring().getYear()), costInflationIndexMap.get(accountingYear));
+                        getCostInflation(lot.getDateOfAcquiring().getYear()), getCostInflation(accountingYear));
                 saleValue += lot.getSaleAmount();
             }
         }
         System.out.println("------------------------------- Long Term Capital Gains ---------------------------------------");
         System.out.println("Cost of Acquisition with Indexation, Sale Value");
         System.out.println((int) costOfAcquisition + ", " + (int) saleValue);
+        return (int) saleValue;
     }
 
     private static double calculateValueWithIndexation(double value, int baseIndex, int desiredIndex) {
         return value * desiredIndex / baseIndex;
-    }
-
-    private static Map<Integer, Integer> GetCostInflationIndexMap() throws IOException {
-        try (BufferedReader br = new BufferedReader(new InputStreamReader(Objects.requireNonNull(FidelityParser.class.getResourceAsStream("/cost_inflation_index.csv"))))) {
-            Map<Integer, Integer> costInflationIndexMap = new HashMap<>();
-            String line;
-            while ((line = br.readLine()) != null) {
-                String[] tokens = line.split(",");
-                costInflationIndexMap.put(Integer.parseInt(tokens[0].split("-")[0]), Integer.parseInt(tokens[1]));
-            }
-            return costInflationIndexMap;
-        }
     }
 
     private static TaxEntry prepareTaxEntry(Lot lot) {
@@ -187,55 +188,17 @@ public class FidelityParser {
         double numShares = lot.getNumSharesInAccountingYear();
 
         int initialValue = (int) (lot.getAcquisitionPricePerShare() * numShares);
-        int peakValue = (int) getPeakValue(stockPriceMap, dateOfAcquiring, accountingYear, numShares, usdToInrMap);
-        int closingValue = (int) (getStockPrice(stockPriceMap, ayEndDate) * getConversionFactor(usdToInrMap, ayEndDate) * numShares);
+        int peakValue = (int) getPeakValue(dateOfAcquiring, accountingYear, numShares);
+        int closingValue = (int) currencyConverter.convert(ayEndDate, getStockPrice(MSFT, ayEndDate) * numShares);
 
-        return new TaxEntry(dateOfAcquiring, initialValue, peakValue, closingValue, (int) lot.getDividends(), (int) lot.getSaleAmount());
+        return new TaxEntry(dateOfAcquiring, initialValue, peakValue, closingValue, (int) lot.getDividends(), lot.getSaleAmount());
     }
 
     private static double getTotalShares(List<Lot> lots) {
         return lots.stream().map(Lot::getNumShares).reduce(Double::sum).orElseThrow(() -> new RuntimeException("No lots found"));
     }
 
-    private static TreeMap<LocalDate, Double> GetMsftPriceMap(Path folderPath) {
-        TreeMap<LocalDate, Double> msftPriceMap = new TreeMap<>();
-        Path usdToInrPath = Paths.get(folderPath.toString(), "MSFT.tsv");
-
-        try (Stream<String> lines = Files.lines(usdToInrPath)) {
-            CustomForEach.forEach(lines, (elem, breaker) -> {
-                if (StringUtils.isBlank(elem)) {
-                    breaker.stop();
-                } else {
-                    String[] tokens = elem.split("\t");
-                    if (!tokens[0].equals("Date") && tokens.length == 7) {
-                        LocalDate localDate = LocalDate.parse(tokens[0], DateTimeFormatter.ofPattern("MMM dd, yyyy"));
-                        double price = Double.parseDouble(tokens[4]);
-                        msftPriceMap.put(localDate, price);
-                    }
-                }
-            });
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-        return msftPriceMap;
-    }
-
-    private static double getConversionFactor(Map<LocalDate, Double> usdToInrMap, LocalDate dateOfAcquiring) {
-        return getConversionFactor(usdToInrMap, dateOfAcquiring, 2);
-    }
-
-    private static double getConversionFactor(Map<LocalDate, Double> usdToInrMap, LocalDate dateOfAcquiring, int fallbackDays) {
-        if (!usdToInrMap.containsKey(dateOfAcquiring)) {
-            if (fallbackDays == 0)
-                throw new RuntimeException("No USD to INR conversion rate found for date: " + dateOfAcquiring);
-
-            //System.out.println("Falling back by 1 day for Conversion Factor");
-            return getConversionFactor(usdToInrMap, dateOfAcquiring.minusDays(1), fallbackDays - 1);
-        }
-        return usdToInrMap.get(dateOfAcquiring);
-    }
-
-    private static double getPeakValue(Map<LocalDate, Double> stockPriceMap, LocalDate dateOfAcquiring, int accountingYear, double numShares, Map<LocalDate, Double> usdToInrMap) {
+    private static double getPeakValue(LocalDate dateOfAcquiring, int accountingYear, double numShares) {
         LocalDate startDate = LocalDate.of(accountingYear, 1, 1);
         LocalDate endDate = LocalDate.of(accountingYear, 12, 31);
         if (!dateOfAcquiring.isBefore(startDate))
@@ -243,44 +206,18 @@ public class FidelityParser {
         if (dateOfAcquiring.isAfter(endDate))
             throw new RuntimeException("Date of acquiring is after the accounting year: " + dateOfAcquiring);
 
-        Pair<LocalDate, Double> peakPriceAndDate = getPeakStockPrice(stockPriceMap, startDate, endDate);
-        double conversionFactor = getConversionFactor(usdToInrMap, peakPriceAndDate.getLeft());
-        return peakPriceAndDate.getRight() * conversionFactor * numShares;
+        Pair<LocalDate, Double> peakPriceAndDate = getPeakStockPrice(MSFT, startDate, endDate);
+        return currencyConverter.convert(peakPriceAndDate.getLeft(), peakPriceAndDate.getRight() * numShares);
     }
 
-    private static Pair<LocalDate, Double> getPeakStockPrice(Map<LocalDate, Double> stockPriceMap, LocalDate startDate, LocalDate endDate) {
-        List<Map.Entry<LocalDate, Double>> applicableEntries = stockPriceMap.entrySet().stream()
-                .filter(e -> !e.getKey().isBefore(startDate) && !e.getKey().isAfter(endDate))
-                .collect(Collectors.toList());
-        //reverse sort by value
-        applicableEntries.sort(Comparator.comparing(Map.Entry::getValue, Comparator.reverseOrder()));
-        return Pair.of(applicableEntries.get(0).getKey(), applicableEntries.get(0).getValue());
-    }
-
-    private static double getInitialValuePerShareIn$(Event event, Map<LocalDate, Double> stockPriceMap, LocalDate dateOfAcquiring) {
+    private static double getInitialValuePerShareIn$(Event event, LocalDate dateOfAcquiring) {
         if (event.getType().equals(EventType.BUY)) {
             return event.getAmount() / event.getShares();
         } else if (event.getType().equals(EventType.DEPOSIT)) {
-            return getStockPrice(stockPriceMap, dateOfAcquiring);
+            return getStockPrice(MSFT, dateOfAcquiring);
         } else {
             throw new RuntimeException("Unknown event type: " + event.getType());
         }
-    }
-
-    private static double getStockPrice(Map<LocalDate, Double> stockPriceMap, LocalDate dateOfAcquiring) {
-        return getStockPrice(stockPriceMap, dateOfAcquiring, 2);
-    }
-
-    private static double getStockPrice(Map<LocalDate, Double> stockPriceMap, LocalDate dateOfAcquiring, int fallbackDays) {
-        if (!stockPriceMap.containsKey(dateOfAcquiring)) {
-            if (fallbackDays == 0)
-                throw new RuntimeException("No stock price found for date: " + dateOfAcquiring);
-
-//            System.out.println("Falling back by 1 day for Stock Price");
-            return getStockPrice(stockPriceMap, dateOfAcquiring.minusDays(1), fallbackDays - 1);
-        }
-
-        return stockPriceMap.get(dateOfAcquiring);
     }
 
     private static List<Event> ReadAllEvents(Path folderPath) throws IOException {
@@ -289,6 +226,7 @@ public class FidelityParser {
             stream.forEach(path -> {
                 if (!path.toString().contains("Transaction history"))
                     return;
+                int year = Integer.parseInt(path.getFileName().toString().split(" ")[2].split("\\.")[0]);
                 try (Stream<String> lines = Files.lines(path)) {
                     AtomicReference<Event> unmetESPP = new AtomicReference<>();
                     CustomForEach.forEach(lines, (elem, breaker) -> {
@@ -296,7 +234,7 @@ public class FidelityParser {
                         if (StringUtils.isBlank(elem)) {
                             breaker.stop();
                         } else {
-                            Event event = FidelityParser.parseLine(elem, unmetESPP.get());
+                            Event event = FidelityParser.parseLine(elem, unmetESPP.get(), year);
                             if (event != null) {
                                 events.add(event);
                                 if (event.getType().equals(EventType.BUY)) {
@@ -313,30 +251,7 @@ public class FidelityParser {
         return events.stream().sorted(Comparator.comparing(Event::getDate)).collect(Collectors.toList());
     }
 
-    private static Map<LocalDate, Double> GetCurrencyConversionMap(Path folderPath) {
-        Map<LocalDate, Double> usdToInrMap = new HashMap<>();
-        Path usdToInrPath = Paths.get(folderPath.toString(), "USDINR.csv");
-
-        try (Stream<String> lines = Files.lines(usdToInrPath)) {
-            CustomForEach.forEach(lines, (elem, breaker) -> {
-                if (StringUtils.isBlank(elem)) {
-                    breaker.stop();
-                } else {
-                    String[] tokens = elem.split(",");
-                    if (!tokens[0].equals("Date")) {
-                        LocalDate localDate = LocalDate.parse(tokens[0], DateTimeFormatter.ofPattern("MM-dd-yyyy"));
-                        double usdToInr = Double.parseDouble(tokens[4]);
-                        usdToInrMap.put(localDate, usdToInr);
-                    }
-                }
-            });
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-        return usdToInrMap;
-    }
-
-    private static Event parseLine(String line, Event unmetESPPEvent) {
+    private static Event parseLine(String line, Event unmetESPPEvent, int year) {
         if (line.startsWith("Transaction date")) {
             return null;
         }
@@ -357,7 +272,10 @@ public class FidelityParser {
             amount = -1 * amount;
         }
 
-        if (type.equals(EventType.REINVEST) || investmentName.equals("FIDELITY GOVERNMENT CASH RESERVES") ||
+        if (type.equals(EventType.REINVEST) ||
+                // TODO: Dividend whether it is against MICROSOFT CORP or FIDELITY GOVERNMENT CASH RESERVES should be treated as Dividend
+                // However there is no Tax collected by Fidelity on the dividends deposited against FIDELITY GOVERNMENT CASH RESERVES
+                investmentName.equals("FIDELITY GOVERNMENT CASH RESERVES") ||
                 typeStr.equals("JOURNALED WIRE/CHECK FEE") || typeStr.equals("JOURNALED CASH WITHDRAWAL")) {
             return null;
         }
@@ -366,7 +284,7 @@ public class FidelityParser {
             throw new RuntimeException("Unknown event type: " + typeStr);
         }
         double shares = Double.parseDouble(numShares);
-        return new Event(date, type, amount, shares);
+        return new Event(date, type, amount, shares, year);
     }
 
     private static EventType getEventType(String typeStr) {

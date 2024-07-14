@@ -1,9 +1,14 @@
-package org.example;
+package org.example.dtos;
+
+import lombok.Getter;
+import lombok.Setter;
 
 import java.time.LocalDate;
 
 //All amounts in this are in INR
+@Getter
 public class Lot {
+    @Setter
     private LocalDate dateOfAcquiring;
     private final double numSharesAtAcquisition;
     private final double acquisitionPricePerShare;
@@ -35,24 +40,8 @@ public class Lot {
         return String.format("%s, %s, %s, %s, %s, %s", dateOfAcquiring, numSharesAtAcquisition, acquisitionPricePerShare, numSharesInAccountingYear, dividends, saleAmount);
     }
 
-    public LocalDate getDateOfAcquiring() {
-        return dateOfAcquiring;
-    }
-
     public void incrementSharesSold(double sharesSold){
         this.sharesSold += sharesSold;
-    }
-
-    public double getNumSharesAtAcquisition() {
-        return numSharesAtAcquisition;
-    }
-
-    public double getAcquisitionPricePerShare() {
-        return acquisitionPricePerShare;
-    }
-
-    public double getNumSharesInAccountingYear() {
-        return numSharesInAccountingYear;
     }
 
     private void decrementSharesInAY(double numShares){
@@ -63,32 +52,12 @@ public class Lot {
             this.activeForAccountingYear = false;
     }
 
-    public boolean isActiveForAccountingYear() {
-        return activeForAccountingYear;
-    }
-
-    public double getDividends() {
-        return dividends;
-    }
-
     public void incrementDividends(double dividends){
         this.dividends += dividends;
     }
 
-    public double getSaleAmount() {
-        return saleAmount;
-    }
-
     public void incrementSales(double saleAmount){
         this.saleAmount += saleAmount;
-    }
-
-    public boolean isActive() {
-        return active;
-    }
-
-    public double getNumShares() {
-        return numShares;
     }
 
     public void decrementShares(double numShares, boolean beforeAY){
@@ -101,17 +70,5 @@ public class Lot {
         if(beforeAY){
             decrementSharesInAY(numShares);
         }
-    }
-
-    public double getSharesSold() {
-        return sharesSold;
-    }
-
-    public double getAcquisitionCostIn$() {
-        return acquisitionCostIn$;
-    }
-
-    public void setDateOfAcquiring(LocalDate date) {
-        this.dateOfAcquiring = date;
     }
 }
