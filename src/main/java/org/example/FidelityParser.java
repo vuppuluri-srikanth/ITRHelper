@@ -131,7 +131,6 @@ public class FidelityParser {
                 break;
 
             if (event.getType().equals(EventType.DIVIDEND)) {
-                System.out.println("########### Dividend : " + event.getAmount());
                 dividendForFY += currencyConverter.convert(event.getDate(), event.getAmount());
             } else if (event.getType().equals(EventType.TAX)) {
                 taxCollectedOutside += currencyConverter.convert(event.getDate(), event.getAmount());
@@ -152,8 +151,6 @@ public class FidelityParser {
             validateTaxEntry(t);
             System.out.println(t);
         });
-        int totalDividends = map.values().stream().map(Optional::get).mapToInt(TaxEntry::getAmountCredited).sum();
-        System.out.println("totalDividends = " + totalDividends);
         return (int) map.values().stream().map(Optional::get).mapToDouble(TaxEntry::getSaleAmount).sum();
     }
 
