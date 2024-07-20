@@ -12,7 +12,7 @@ import java.util.stream.Collectors;
 
 public class StockPriceRepository {
     private static final Map<String, TreeMap<LocalDate, Double>> stockPrices = new HashMap<>();
-    public static final int FALLBACK_DAYS = 2;
+    public static final int FALLBACK_DAYS = 3;
 
     public static Double getStockPrice(String ticker, LocalDate date){
         Map<LocalDate, Double> prices = getStockPrices(ticker);
