@@ -2,8 +2,6 @@ package org.example.dtos;
 
 import lombok.Data;
 
-import java.time.LocalDate;
-
 @Data
 public class DtlsForeignEquityDebtInterest {
     private final String AddressOfEntity = "One Microsoft Way Redmond, WA";
