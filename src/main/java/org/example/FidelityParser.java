@@ -2,10 +2,7 @@ package org.example;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.tuple.Pair;
-import org.example.dtos.Event;
-import org.example.dtos.EventType;
-import org.example.dtos.Lot;
-import org.example.dtos.TaxEntry;
+import org.example.dtos.*;
 import org.example.repositories.CurrencyConverterFactory;
 import org.example.repositories.CurrencyConverterFactory.CurrencyConverter;
 
@@ -87,6 +84,8 @@ public class FidelityParser {
                             lot.incrementSharesSold(numSharedSold);
                         }
                         numShares -= numSharedSold;
+                        if(numShares == 0.0)
+                            break;
                     }
                 }
             } else if (event.getType().equals(EventType.DIVIDEND)) {
@@ -118,34 +117,77 @@ public class FidelityParser {
             lots.remove(unmetESPPLot);
         }
 
+        printEvents(events);
         int totalSale = printLongTermCapitalGains(lots);
-
-        printIncomeFromDividends(fyEndDate, fyStartDate, events);
-
         int totalSaleFA = printForeignAssets(lots);
+
         if (totalSale != totalSaleFA)
             throw new IllegalStateException(String.format("Total Sale is not matching : %d %d", totalSale, totalSaleFA));
     }
 
+    private static void printEvents(List<Event> events) {
+        printSales(events);
+        Map<LocalDate, Double> taxEvents = printTaxes(events);
+        printDividends(events, taxEvents);
+    }
 
-    private static void printIncomeFromDividends(LocalDate fyEndDate, LocalDate fyStartDate, List<Event> events) {
-        double dividendForFY = 0; //India FY
-        double taxCollectedOutside = 0;
-        for (Event event : events) {
-            if (event.getDate().isBefore(fyStartDate))
-                continue;
-            if (event.getDate().isAfter(fyEndDate))
-                break;
-
-            if (event.getType().equals(EventType.DIVIDEND)) {
-                dividendForFY += currencyConverter.convert(event.getDate(), event.getAmount());
-            } else if (event.getType().equals(EventType.TAX)) {
-                taxCollectedOutside += currencyConverter.convert(event.getDate(), event.getAmount());
+    private static void printSales(List<Event> events) {
+        System.out.println("------------------------------- Sales ---------------------------------------");
+        System.out.println("Date,Amount(Foreign Currency),Amount(INR)");
+        for(Event event : events){
+            if(!event.getDate().isBefore(fyStartDate) && event.getType().equals(EventType.SELL) && event.getAmount() > 0){
+                System.out.printf("%s,%f,%d%n",event.getDate(), event.getAmount(), (int) currencyConverter.convert(event.getDate(), event.getAmount()));
             }
         }
-        System.out.println("------------------------------- Dividend Income ---------------------------------------");
-        System.out.println("Dividend Income, Tax Collected Outside India");
-        System.out.println((int) dividendForFY + ", " + (int) taxCollectedOutside);
+    }
+
+    private static Map<LocalDate, Double> printTaxes(List<Event> events) {
+        Map<LocalDate, Double> taxEvents = new HashMap<>();
+        System.out.println("------------------------------- Taxes ---------------------------------------");
+        System.out.println("Date,Amount(Foreign Currency),Amount(INR)");
+        double taxes = 0;
+        for(Event event : events){
+            if(!event.getDate().isBefore(fyStartDate) && event.getType().equals(EventType.TAX) && event.getAmount() > 0){
+                taxEvents.put(event.getDate(), event.getAmount());
+                double amount = currencyConverter.convert(event.getDate(), event.getAmount());
+                taxes += amount;
+                System.out.printf("%s,%f,%.2f%n",event.getDate(), event.getAmount(), amount);
+            }
+        }
+        System.out.printf("Total taxes = %.2f%n", taxes);
+        return taxEvents;
+    }
+
+    private static void printDividends(List<Event> events, Map<LocalDate, Double> taxEvents) {
+        System.out.println("------------------------------- Dividends ---------------------------------------");
+        System.out.println("Date,Amount(Foreign Currency),Amount(INR)");
+        double dividendValue = 0;
+        double[] dividendByQuarter = new double[5];
+        for(Event event : events){
+            if(!event.getDate().isBefore(fyStartDate) && event.getType().equals(EventType.DIVIDEND) && event.getAmount() > 0){
+                if(taxEvents.containsKey(event.getDate())) {
+                    double amount = currencyConverter.convert(event.getDate(), event.getAmount());
+                    dividendValue += amount;
+
+                    if(event.getDate().isBefore(LocalDate.of(calendarYear, 6, 16)))
+                        dividendByQuarter[0] += amount;
+                    else if(event.getDate().isBefore(LocalDate.of(calendarYear, 9, 16)))
+                        dividendByQuarter[1] += amount;
+                    else if(event.getDate().isBefore(LocalDate.of(calendarYear, 12, 16)))
+                        dividendByQuarter[2] += amount;
+                    else if(event.getDate().isBefore(LocalDate.of(calendarYear + 1, 3, 16)))
+                        dividendByQuarter[3] += amount;
+                    else
+                        dividendByQuarter[4] += amount;
+
+                    System.out.printf("%s,%f,%.2f%n", event.getDate(), event.getAmount(), amount);
+                }
+            }
+        }
+        System.out.printf("Total dividends = %.2f%n", dividendValue);
+        for (int i = 0; i < 5; i++) {
+            System.out.printf("Quarter %d : %.2f%n", i + 1, dividendByQuarter[i]);
+        }
     }
 
     //Returns total sale value
@@ -182,6 +224,7 @@ public class FidelityParser {
         System.out.println("------------------------------- Long Term Capital Gains ---------------------------------------");
         System.out.println("Cost of Acquisition with Indexation, Sale Value");
         System.out.println((int) costOfAcquisition + ", " + (int) saleValue);
+
         return (int) saleValue;
     }
 
@@ -241,7 +284,7 @@ public class FidelityParser {
                             breaker.stop();
                         } else {
                             Event event = FidelityParser.parseLine(elem, unmetESPP.get(), year);
-                            if (event != null) {
+                            if (event != null && !event.getDate().isAfter(fyEndDate)) {
                                 events.add(event);
                                 if (event.getType().equals(EventType.BUY)) {
                                     unmetESPP.set(event);
@@ -280,7 +323,7 @@ public class FidelityParser {
         if (type.equals(EventType.REINVEST) ||
                 // TODO: Dividend whether it is against MICROSOFT CORP or FIDELITY GOVERNMENT CASH RESERVES should be treated as Dividend
                 // However there is no Tax collected by Fidelity on the dividends deposited against FIDELITY GOVERNMENT CASH RESERVES
-                investmentName.equals("FIDELITY GOVERNMENT CASH RESERVES") ||
+                typeStr.contains("KKR") ||
                 typeStr.equals("JOURNALED WIRE/CHECK FEE") || typeStr.equals("JOURNALED CASH WITHDRAWAL")) {
             return null;
         }
@@ -295,7 +338,7 @@ public class FidelityParser {
     private static EventType getEventType(String typeStr) {
         if (typeStr.equals("DIVIDEND RECEIVED"))
             return EventType.DIVIDEND;
-        if (typeStr.equals("NON-RESIDENT TAX"))
+        if (typeStr.equals("NON-RESIDENT TAX") || typeStr.equals("NON-RESIDENT TAX DIVIDEND RECEIVED"))
             return EventType.TAX;
         if (typeStr.equals("CONVERSION SHARES DEPOSITED"))
             return EventType.DEPOSIT;

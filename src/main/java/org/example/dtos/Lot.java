@@ -1,7 +1,6 @@
 package org.example.dtos;
 
-import lombok.Getter;
-import lombok.Setter;
+import lombok.*;
 
 import java.time.LocalDate;
 
@@ -19,7 +18,6 @@ public class Lot {
     private boolean active = true;
     private double dividends;
     private double saleAmount;
-    private double saleAmountInCY;
 
     private double sharesSold;
     private final double acquisitionCostIn$;
@@ -66,6 +64,8 @@ public class Lot {
     }
 
     public void incrementSales(double saleAmount){
+        if(saleAmount == 0.0)
+            throw new RuntimeException("Amount is zero");
         this.saleAmount += saleAmount;
     }
 
@@ -81,3 +81,4 @@ public class Lot {
         }
     }
 }
+
