@@ -80,7 +80,7 @@ public class FidelityParser {
                         lot.decrementShares(numSharedSold, beforeCY);
                         // Only consider sales done in the FY
                         if (!beforeFY) {
-                            lot.incrementSales(currencyConverter.convert(event.getDate(), numSharedSold * saleAmountPerShare));
+                            lot.incrementSales(currencyConverter.convertIncome(event.getDate(), numSharedSold * saleAmountPerShare));
                             lot.incrementSharesSold(numSharedSold);
                         }
                         numShares -= numSharedSold;
@@ -97,7 +97,7 @@ public class FidelityParser {
                 double dividendPerShare = amount / totalSharesNow;
                 for (Lot lot : lots) {
                     if (lot.isActive()) {
-                        lot.incrementDividends(currencyConverter.convert(event.getDate(), lot.getNumShares() * dividendPerShare));
+                        lot.incrementDividends(currencyConverter.convertIncome(event.getDate(), lot.getNumShares() * dividendPerShare));
                     }
                 }
             } else if (event.getType().equals(EventType.ESPP)) {
@@ -136,7 +136,7 @@ public class FidelityParser {
         System.out.println("Date,Amount(Foreign Currency),Amount(INR)");
         for(Event event : events){
             if(!event.getDate().isBefore(fyStartDate) && event.getType().equals(EventType.SELL) && event.getAmount() > 0){
-                System.out.printf("%s,%f,%d%n",event.getDate(), event.getAmount(), (int) currencyConverter.convert(event.getDate(), event.getAmount()));
+                System.out.printf("%s,%f,%d%n",event.getDate(), event.getAmount(), (int) currencyConverter.convertIncome(event.getDate(), event.getAmount()));
             }
         }
     }
@@ -149,7 +149,7 @@ public class FidelityParser {
         for(Event event : events){
             if(!event.getDate().isBefore(fyStartDate) && event.getType().equals(EventType.TAX) && event.getAmount() > 0){
                 taxEvents.put(event.getDate(), event.getAmount());
-                double amount = currencyConverter.convert(event.getDate(), event.getAmount());
+                double amount = currencyConverter.convertIncome(event.getDate(), event.getAmount());
                 taxes += amount;
                 System.out.printf("%s,%f,%.2f%n",event.getDate(), event.getAmount(), amount);
             }
@@ -166,7 +166,7 @@ public class FidelityParser {
         for(Event event : events){
             if(!event.getDate().isBefore(fyStartDate) && event.getType().equals(EventType.DIVIDEND) && event.getAmount() > 0){
                 if(taxEvents.containsKey(event.getDate())) {
-                    double amount = currencyConverter.convert(event.getDate(), event.getAmount());
+                    double amount = currencyConverter.convertIncome(event.getDate(), event.getAmount());
                     dividendValue += amount;
 
                     if(event.getDate().isBefore(LocalDate.of(calendarYear, 6, 16)))
