@@ -134,11 +134,15 @@ public class FidelityParser {
     private static void printSales(List<Event> events) {
         System.out.println("------------------------------- Sales ---------------------------------------");
         System.out.println("Date,Amount(Foreign Currency),Amount(INR)");
+        double sales = 0;
         for(Event event : events){
             if(!event.getDate().isBefore(fyStartDate) && event.getType().equals(EventType.SELL) && event.getAmount() > 0){
-                System.out.printf("%s,%f,%d%n",event.getDate(), event.getAmount(), (int) currencyConverter.convertIncome(event.getDate(), event.getAmount()));
+                double amount = currencyConverter.convertIncome(event.getDate(), event.getAmount());
+                sales += amount;
+                System.out.printf("%s,%f,%.2f%n",event.getDate(), event.getAmount(), amount);
             }
         }
+        System.out.printf("sales = %.2f%n", sales);
     }
 
     private static Map<LocalDate, Double> printTaxes(List<Event> events) {
@@ -163,6 +167,7 @@ public class FidelityParser {
         System.out.println("Date,Amount(Foreign Currency),Amount(INR)");
         double dividendValue = 0;
         double[] dividendByQuarter = new double[5];
+        TreeMap<LocalDate, Double> dividends = new TreeMap<>();
         for(Event event : events){
             if(!event.getDate().isBefore(fyStartDate) && event.getType().equals(EventType.DIVIDEND) && event.getAmount() > 0){
                 if(taxEvents.containsKey(event.getDate())) {
@@ -181,12 +186,29 @@ public class FidelityParser {
                         dividendByQuarter[4] += amount;
 
                     System.out.printf("%s,%f,%.2f%n", event.getDate(), event.getAmount(), amount);
+                    dividends.put(event.getDate(), amount);
                 }
             }
         }
         System.out.printf("Total dividends = %.2f%n", dividendValue);
         for (int i = 0; i < 5; i++) {
             System.out.printf("Quarter %d : %.2f%n", i + 1, dividendByQuarter[i]);
+        }
+
+        printForm67(dividends);
+    }
+
+    private static void printForm67(TreeMap<LocalDate, Double> dividends) {
+        int i = 1;
+        System.out.println("------------------------------- Form 67 ---------------------------------------");
+        System.out.println("Sl. No.,Name of the country/specified territory,Please specify,Source of income,Please specify ,Income from outside India,Amount,Rate(%),Tax payable on such income under normal provisions in India,Tax payable on such income under Section 115JB/JC,Article No. of Double Taxation Avoidance Agreements,Rate of tax as per Double Taxation Avoidance Agreements(%),Amount ,Credit claimed under section 91,Total foreign tax credit claimed");
+        for(Map.Entry<LocalDate, Double> entry : dividends.entrySet()){
+            double dividend = Math.round(entry.getValue());
+            double tax = Math.round(dividend/4);
+            double taxNormalProvisions = Math.round(dividend * 0.3);
+            System.out.printf("%d,United States Of America,,Dividend,,%d,%d,25,%d,,10,25,%d,0,%d%n",
+                    i, (int)dividend, (int)tax, (int)taxNormalProvisions,(int)tax,(int)tax);
+            i++;
         }
     }
 
