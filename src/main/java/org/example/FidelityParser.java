@@ -206,7 +206,7 @@ public class FidelityParser {
             double dividend = Math.round(entry.getValue());
             double tax = Math.round(dividend/4);
             double taxNormalProvisions = Math.round(dividend * 0.3);
-            System.out.printf("%d,United States Of America,,Dividend,,%d,%d,25,%d,,10,25,%d,0,%d%n",
+            System.out.printf("%d,2,,7,,%d,%d,25,%d,,10,25,%d,0,%d%n",
                     i, (int)dividend, (int)tax, (int)taxNormalProvisions,(int)tax,(int)tax);
             i++;
         }
