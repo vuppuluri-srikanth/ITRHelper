@@ -26,7 +26,6 @@ public class CurrencyConverterFactory {
             return currencyMap.get(key);
 
         Map<LocalDate, Double> dateToRateMap = new HashMap<>();
-        //dateToRateMap = readFromCurrencyExchange(key, dateToRateMap);
         dateToRateMap = readFromTTBR(key, dateToRateMap);
         currencyMap.put(key, dateToRateMap);
         return currencyMap.get(key);
@@ -45,26 +44,6 @@ public class CurrencyConverterFactory {
                     if(usdToInr == 0)
                         continue;
                     dateToRateMap.put(localDate.toLocalDate(), usdToInr);
-                }
-            }
-        } catch (IOException e) {
-            throw new RuntimeException("Exception reading Conversion Rate. Exception : " + e);
-        } catch (NullPointerException e) {
-            dateToRateMap = null;
-        }
-        return dateToRateMap;
-    }
-
-    private static Map<LocalDate, Double> readFromCurrencyExchange(String key, Map<LocalDate, Double> dateToRateMap) {
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(Objects.requireNonNull(
-                StockPriceRepository.class.getResourceAsStream(String.format("/currency_conversions/%s.csv", key)))))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                String[] tokens = line.split(",");
-                if (!tokens[0].equals("Date")) {
-                    LocalDate localDate = LocalDate.parse(tokens[0], DateTimeFormatter.ofPattern("MM-dd-yyyy"));
-                    double usdToInr = Double.parseDouble(tokens[4]);
-                    dateToRateMap.put(localDate, usdToInr);
                 }
             }
         } catch (IOException e) {
